@@ -5,6 +5,7 @@ import { getPayOSClient } from "@/lib/payos";
 import { getSupabaseAdmin } from "@/lib/supabase";
 
 export const runtime = "nodejs";
+// Webhook endpoint: handles PayOS validation requests, test requests, and live payment webhooks
 
 function isPayOSWebhook(value: unknown): value is Webhook {
   if (!value || typeof value !== "object") return false;
