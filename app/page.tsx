@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { toPng } from "html-to-image";
 import { ArrowDownToLine, Check, CircleCheck, LockKeyhole, Sparkles } from "lucide-react";
 import { CanvasPreview } from "@/components/CanvasPreview";
 import { Header } from "@/components/Header";
@@ -20,9 +19,11 @@ const initialFormData: QRFormData = {
 };
 
 const pendingPaymentKey = "qrdep:pending-payos-payment";
+const paidPaymentKey = "qrdep:paid-payos-payment";
 
 type PendingPayment = {
   orderCode: string;
+  accessToken: string;
   formData: QRFormData;
 };
 
@@ -36,16 +37,20 @@ function isQRFormData(value: unknown): value is QRFormData {
 }
 
 export default function Home() {
-  const posterRef = useRef<HTMLDivElement>(null);
+  const paymentActionRef = useRef(false);
+  const downloadActionRef = useRef(false);
   const [formData, setFormData] = useState<QRFormData>(initialFormData);
   const [isUnlocked, setIsUnlocked] = useState(false);
+  const [isSimulationUnlocked, setIsSimulationUnlocked] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isCreatingPayOSPayment, setIsCreatingPayOSPayment] = useState(false);
   const [isPayOSEnabled, setIsPayOSEnabled] = useState(false);
+  const [isSimulationEnabled, setIsSimulationEnabled] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
   const [toastMessage, setToastMessage] = useState("");
+  const [pendingPayment, setPendingPayment] = useState<PendingPayment | null>(null);
   const toastTimeoutRef = useRef<number | null>(null);
   const selectedBank = BANKS.find((bank) => bank.code === formData.bankCode);
   const selectedTemplate = getTemplateById(formData.templateId);
@@ -59,15 +64,68 @@ export default function Home() {
     toastTimeoutRef.current = window.setTimeout(() => setToastMessage(""), 3200);
   }, []);
 
+  const checkOrderStatus = useCallback(async (payment: PendingPayment, reopenModal = false) => {
+    if (paymentActionRef.current) return;
+    paymentActionRef.current = true;
+    setIsProcessing(true);
+    setDownloadError("");
+    try {
+      const response = await fetch(
+        `/api/orders/${encodeURIComponent(payment.orderCode)}?templateId=${encodeURIComponent(payment.formData.templateId)}`,
+        {
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${payment.accessToken}` },
+        },
+      );
+      const result = await response.json() as { status?: string };
+      if (!response.ok) throw new Error("Không thể kiểm tra trạng thái đơn hàng.");
+
+      setFormData(payment.formData);
+      setPendingPayment(payment);
+      if (result.status === "PAID") {
+        setIsUnlocked(true);
+        setIsSimulationUnlocked(false);
+        sessionStorage.setItem(paidPaymentKey, JSON.stringify(payment));
+        sessionStorage.removeItem(pendingPaymentKey);
+        setIsModalOpen(false);
+        showToast("Đã xác nhận thanh toán. Standee HD đã được mở khóa.");
+      } else if (result.status === "FAILED") {
+        setIsUnlocked(false);
+        setIsSimulationUnlocked(false);
+        setPendingPayment(null);
+        sessionStorage.removeItem(paidPaymentKey);
+        sessionStorage.removeItem(pendingPaymentKey);
+        setIsModalOpen(false);
+        showToast("Đơn hàng không hoàn tất. Bạn có thể tạo đơn mới.");
+      } else {
+        setIsUnlocked(false);
+        setIsSimulationUnlocked(false);
+        sessionStorage.setItem(pendingPaymentKey, JSON.stringify(payment));
+        sessionStorage.removeItem(paidPaymentKey);
+        if (reopenModal) setIsModalOpen(true);
+        showToast("Đơn hàng vẫn đang chờ thanh toán. Hãy kiểm tra lại sau.");
+      }
+    } catch {
+      setDownloadError("Chưa thể kiểm tra đơn hàng. Hãy thử lại sau ít giây.");
+      if (reopenModal) setIsModalOpen(true);
+      showToast("Chưa thể kết nối để xác nhận thanh toán.");
+    } finally {
+      paymentActionRef.current = false;
+      setIsProcessing(false);
+    }
+  }, [showToast]);
+
   useEffect(() => {
     let active = true;
     void fetch("/api/payos/create-payment", { cache: "no-store" })
       .then((response) => response.json())
-      .then((data: { enabled?: boolean }) => {
+      .then((data: { enabled?: boolean; simulationEnabled?: boolean }) => {
         if (active) setIsPayOSEnabled(data.enabled === true);
+        if (active) setIsSimulationEnabled(data.simulationEnabled === true);
       })
       .catch(() => {
         if (active) setIsPayOSEnabled(false);
+        if (active) setIsSimulationEnabled(false);
       });
     return () => {
       active = false;
@@ -77,70 +135,57 @@ export default function Home() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const paymentResult = params.get("payos");
-    if (!paymentResult) return;
+    const isReturn = paymentResult === "return" || paymentResult === "cancel";
+    const storedPayment = isReturn
+      ? sessionStorage.getItem(pendingPaymentKey)
+      : sessionStorage.getItem(paidPaymentKey);
+    if (!isReturn && !storedPayment) return;
 
-    let pendingPayment: PendingPayment | null = null;
+    let restoredPayment: PendingPayment | null = null;
     try {
-      const rawPendingPayment = sessionStorage.getItem(pendingPaymentKey);
-      if (rawPendingPayment) {
-        const parsed = JSON.parse(rawPendingPayment) as Partial<PendingPayment>;
-        if (typeof parsed.orderCode === "string" && isQRFormData(parsed.formData)) {
-          pendingPayment = { orderCode: parsed.orderCode, formData: parsed.formData };
-          setFormData(parsed.formData);
+      if (storedPayment) {
+        const parsed = JSON.parse(storedPayment) as Partial<PendingPayment>;
+        if (
+          typeof parsed.orderCode === "string" &&
+          typeof parsed.accessToken === "string" &&
+          /^[A-Za-z0-9_-]{43}$/.test(parsed.accessToken) &&
+          isQRFormData(parsed.formData)
+        ) {
+          restoredPayment = {
+            orderCode: parsed.orderCode,
+            accessToken: parsed.accessToken,
+            formData: parsed.formData,
+          };
+          setFormData(restoredPayment.formData);
+          setPendingPayment(restoredPayment);
         }
       }
     } catch {
       sessionStorage.removeItem(pendingPaymentKey);
+      sessionStorage.removeItem(paidPaymentKey);
     }
 
     const orderCode = params.get("orderCode");
-    window.history.replaceState({}, document.title, window.location.pathname);
+    if (isReturn) window.history.replaceState({}, document.title, window.location.pathname);
 
-    if (paymentResult === "cancel") {
-      sessionStorage.removeItem(pendingPaymentKey);
-      showToast("Bạn đã hủy thanh toán. Mẫu thiết kế vẫn được giữ lại.");
-      return;
-    }
-
-    if (paymentResult !== "return" || !orderCode || pendingPayment?.orderCode !== orderCode) {
-      sessionStorage.removeItem(pendingPaymentKey);
-      showToast("Không tìm thấy đơn thanh toán cần xác minh.");
-      return;
-    }
-
-    let active = true;
-    setIsProcessing(true);
-    const templateId = pendingPayment.formData.templateId;
-    void fetch(`/api/payos/verify-payment?orderCode=${encodeURIComponent(orderCode)}&templateId=${encodeURIComponent(templateId)}`, { cache: "no-store" })
-      .then(async (response) => {
-        const result = await response.json() as { paid?: boolean };
-        if (!response.ok) throw new Error("Không thể xác minh thanh toán.");
-        if (!active) return;
-        if (result.paid) {
-          setIsUnlocked(true);
-          showToast("Thanh toán thành công. Standee HD đã được mở khóa.");
-        } else {
-          showToast("Thanh toán chưa hoàn tất. Bạn có thể thử lại.");
-        }
-      })
-      .catch(() => {
-        if (active) showToast("Chưa xác minh được thanh toán. Vui lòng tải lại trang để thử lại.");
-      })
-      .finally(() => {
+    if (!restoredPayment || (isReturn && (!orderCode || restoredPayment.orderCode !== orderCode))) {
+      if (isReturn) {
         sessionStorage.removeItem(pendingPaymentKey);
-        if (active) setIsProcessing(false);
-      });
+        showToast("Không tìm thấy đơn thanh toán cần xác minh.");
+      }
+      return;
+    }
 
-    return () => {
-      active = false;
-    };
-  }, [showToast]);
+    if (paymentResult === "cancel") showToast("Bạn đã hủy thanh toán. Đang kiểm tra trạng thái đơn hàng.");
+    void checkOrderStatus(restoredPayment, isReturn);
+  }, [checkOrderStatus, showToast]);
 
   useEffect(() => () => {
     if (toastTimeoutRef.current) window.clearTimeout(toastTimeoutRef.current);
   }, []);
 
   const updateFormData = (nextData: QRFormData) => {
+    const templateChanged = nextData.templateId !== formData.templateId;
     const wasReady = Boolean(selectedBank && formData.accountNumber.trim() && formData.accountName.trim());
     const willBeReady = Boolean(
       BANKS.find((bank) => bank.code === nextData.bankCode) &&
@@ -148,8 +193,23 @@ export default function Home() {
       nextData.accountName.trim(),
     );
     setFormData(nextData);
-    setIsUnlocked(false);
-    if (nextData.templateId !== formData.templateId) {
+    if (templateChanged) {
+      setIsUnlocked(false);
+      setIsSimulationUnlocked(false);
+      if (pendingPayment) {
+        setPendingPayment(null);
+        sessionStorage.removeItem(pendingPaymentKey);
+        sessionStorage.removeItem(paidPaymentKey);
+      }
+    } else if (pendingPayment) {
+      const updatedPayment = { ...pendingPayment, formData: nextData };
+      const storageKey = isUnlocked ? paidPaymentKey : pendingPaymentKey;
+      const otherStorageKey = isUnlocked ? pendingPaymentKey : paidPaymentKey;
+      setPendingPayment(updatedPayment);
+      sessionStorage.setItem(storageKey, JSON.stringify(updatedPayment));
+      sessionStorage.removeItem(otherStorageKey);
+    }
+    if (templateChanged) {
       showToast("Đã đổi phong cách Standee.");
     } else if (!wasReady && willBeReady) {
       showToast("Mã VietQR đã sẵn sàng để xem trước.");
@@ -166,39 +226,32 @@ export default function Home() {
   };
 
   const downloadPoster = async () => {
-    const poster = posterRef.current;
-    if (!poster || !canCreateQr) return false;
+    if (!canCreateQr || downloadActionRef.current) return false;
+    if (selectedTemplate.price > 0 && !isUnlocked) return false;
 
+    downloadActionRef.current = true;
     setIsDownloading(true);
     setDownloadError("");
     try {
-      await document.fonts.ready;
-      await Promise.all(Array.from(poster.querySelectorAll("img"), (image) => image.decode()));
-      const width = poster.getBoundingClientRect().width;
-      const height = width * (16 / 9);
-      const scale = 1080 / width;
-      const imageUrl = await toPng(poster, {
-        cacheBust: true,
-        width: 1080,
-        height: 1920,
-        canvasWidth: 1080,
-        canvasHeight: 1920,
-        pixelRatio: 1,
-        style: {
-          width: `${width}px`,
-          height: `${height}px`,
-          maxWidth: "none",
-          transform: `scale(${scale})`,
-          transformOrigin: "top left",
-        },
+      const response = await fetch("/api/export-qr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderCode: pendingPayment?.orderCode,
+          token: pendingPayment?.accessToken,
+          simulation: isSimulationUnlocked,
+          formData,
+        }),
       });
-      const pngImage = new Image();
-      pngImage.src = imageUrl;
-      await pngImage.decode();
-      if (pngImage.naturalWidth !== 1080 || pngImage.naturalHeight !== 1920) {
-        throw new Error("Kích thước ảnh chưa chính xác.");
+      if (!response.ok) {
+        const result = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(result?.error || "Không thể tạo ảnh Standee.");
       }
-      const imageBlob = await (await fetch(imageUrl)).blob();
+      if (!response.headers.get("content-type")?.includes("image/png")) {
+        throw new Error("Máy chủ trả về định dạng ảnh không hợp lệ.");
+      }
+      const imageBlob = await response.blob();
+      if (!imageBlob.size) throw new Error("Ảnh tạo ra không có dữ liệu.");
       const imageObjectUrl = URL.createObjectURL(imageBlob);
       const downloadLink = document.createElement("a");
       downloadLink.download = "standee-qrdep-hd-1080x1920.png";
@@ -214,34 +267,50 @@ export default function Home() {
       return false;
     } finally {
       setIsDownloading(false);
+      downloadActionRef.current = false;
     }
   };
 
   const handlePrimaryAction = () => {
+    if (!canCreateQr || isProcessing || isDownloading) return;
     if (selectedTemplate.price === 0) {
       void downloadPoster();
     } else if (isUnlocked) {
       void downloadPoster();
-    } else if (canCreateQr) {
+    } else if (isPayOSEnabled || isSimulationEnabled) {
       setDownloadError("");
       setIsModalOpen(true);
     }
   };
 
   const handleSimulatedPayment = async () => {
+    if (!isSimulationEnabled || paymentActionRef.current) return;
+    paymentActionRef.current = true;
     setIsProcessing(true);
     setDownloadError("");
-    flushSync(() => setIsUnlocked(true));
-    const downloaded = await downloadPoster();
-    if (downloaded) {
-      setIsModalOpen(false);
-    } else {
-      flushSync(() => setIsUnlocked(false));
+    try {
+      flushSync(() => {
+        setIsUnlocked(true);
+        setIsSimulationUnlocked(true);
+      });
+      const downloaded = await downloadPoster();
+      if (downloaded) {
+        setIsModalOpen(false);
+      } else {
+        flushSync(() => {
+          setIsUnlocked(false);
+          setIsSimulationUnlocked(false);
+        });
+      }
+    } finally {
+      paymentActionRef.current = false;
+      setIsProcessing(false);
     }
-    setIsProcessing(false);
   };
 
   const handlePayOSPayment = async () => {
+    if (!isPayOSEnabled || paymentActionRef.current) return;
+    paymentActionRef.current = true;
     setIsCreatingPayOSPayment(true);
     setDownloadError("");
     try {
@@ -252,23 +321,32 @@ export default function Home() {
       });
       const result = await response.json() as {
         orderCode?: number;
+        accessToken?: string;
         checkoutUrl?: string;
         error?: string;
       };
-      if (!response.ok || !result.orderCode || !result.checkoutUrl) {
+      if (!response.ok || !result.orderCode || !result.accessToken || !result.checkoutUrl) {
         throw new Error(result.error || "Không thể tạo liên kết PayOS.");
       }
       const pendingPayment: PendingPayment = {
         orderCode: String(result.orderCode),
+        accessToken: result.accessToken,
         formData,
       };
+      setPendingPayment(pendingPayment);
       sessionStorage.setItem(pendingPaymentKey, JSON.stringify(pendingPayment));
       showToast("Đang chuyển tới trang thanh toán PayOS.");
       window.location.assign(result.checkoutUrl);
     } catch (error) {
       setDownloadError(error instanceof Error ? error.message : "Không thể kết nối PayOS.");
       setIsCreatingPayOSPayment(false);
+      paymentActionRef.current = false;
     }
+  };
+
+  const handlePaymentModalClose = () => {
+    setIsModalOpen(false);
+    if (pendingPayment) void checkOrderStatus(pendingPayment);
   };
 
   return (
@@ -328,12 +406,13 @@ export default function Home() {
           </section>
 
           <CanvasPreview
-            ref={posterRef}
             value={formData}
             bank={selectedBank}
             template={selectedTemplate}
             isUnlocked={isUnlocked || selectedTemplate.price === 0}
             isReady={canCreateQr}
+            isProcessing={isProcessing}
+            paymentAvailable={selectedTemplate.price === 0 || isPayOSEnabled || isSimulationEnabled}
             isDownloading={isDownloading}
             error={downloadError}
             onPrimaryAction={handlePrimaryAction}
@@ -352,9 +431,12 @@ export default function Home() {
         isProcessing={isProcessing}
         isCreatingPayment={isCreatingPayOSPayment}
         payosEnabled={isPayOSEnabled}
+        simulationEnabled={isSimulationEnabled}
         price={selectedTemplate.price}
         error={downloadError}
-        onClose={() => setIsModalOpen(false)}
+        pendingOrderCode={pendingPayment?.orderCode ?? null}
+        onCheckPayment={() => pendingPayment && void checkOrderStatus(pendingPayment, true)}
+        onClose={handlePaymentModalClose}
         onPayOSPayment={handlePayOSPayment}
         onSimulatePayment={handleSimulatedPayment}
       />

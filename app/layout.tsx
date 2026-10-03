@@ -38,11 +38,13 @@ export const metadata: Metadata = {
     siteName: "QRDep",
     locale: "vi_VN",
     type: "website",
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: "QRDep - Thiết kế Standee VietQR nghệ thuật 9:16" }],
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title: seoTitle,
     description: seoDescription,
+    images: ["/opengraph-image"],
   },
 };
 

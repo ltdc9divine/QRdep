@@ -13,6 +13,8 @@ type CanvasPreviewProps = {
   template: PosterTemplate;
   isUnlocked: boolean;
   isReady: boolean;
+  isProcessing: boolean;
+  paymentAvailable: boolean;
   isDownloading: boolean;
   error: string;
   onPrimaryAction: () => void;
@@ -20,7 +22,7 @@ type CanvasPreviewProps = {
 };
 
 const CanvasPreview = forwardRef<HTMLDivElement, CanvasPreviewProps>(function CanvasPreview(
-  { value, bank, template, isUnlocked, isReady, isDownloading, error, onPrimaryAction, onCopy },
+  { value, bank, template, isUnlocked, isReady, isProcessing, paymentAvailable, isDownloading, error, onPrimaryAction, onCopy },
   ref,
 ) {
   const qrIsReady = Boolean(isReady && bank);
@@ -153,18 +155,22 @@ const CanvasPreview = forwardRef<HTMLDivElement, CanvasPreviewProps>(function Ca
       <button
         type="button"
         className="group relative isolate mt-4 flex min-h-14 w-full overflow-hidden rounded-xl bg-gradient-to-r from-emerald-400 via-teal-400 to-emerald-300 px-4 py-4 text-center text-sm font-bold text-slate-950 shadow-[0_0_30px_rgba(16,185,129,0.35)] transition-all duration-300 hover:scale-[1.02] hover:shadow-[0_0_45px_rgba(16,185,129,0.5)] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 disabled:scale-100 disabled:cursor-not-allowed disabled:from-slate-700 disabled:via-slate-800 disabled:to-slate-700 disabled:text-slate-500 disabled:shadow-none sm:text-base"
-        disabled={!isReady || isDownloading}
+        disabled={!isReady || !paymentAvailable || isDownloading || isProcessing}
         onClick={onPrimaryAction}
       >
         <span className="pointer-events-none absolute inset-y-0 -left-1/2 z-0 w-1/3 skew-x-[-20deg] bg-white/35 opacity-0 blur-md transition-all duration-700 group-hover:left-full group-hover:opacity-100" aria-hidden="true" />
         <span className="relative z-10 flex items-center justify-center gap-2.5">
-          {isDownloading ? <ArrowDownToLine className="animate-bounce" size={19} /> : isUnlocked ? <ArrowDownToLine size={19} /> : <Zap size={19} fill="currentColor" />}
-          {isDownloading
+          {isDownloading || isProcessing ? <ArrowDownToLine className="animate-bounce" size={19} /> : isUnlocked ? <ArrowDownToLine size={19} /> : <Zap size={19} fill="currentColor" />}
+          {isProcessing
+            ? "Đang xác minh thanh toán…"
+            : isDownloading
             ? "Đang tạo ảnh HD…"
             : isFreeTemplate
               ? "Tải Ảnh HD Ngay - Miễn Phí"
               : isUnlocked
                 ? "Tải ảnh PNG HD ngay"
+              : !paymentAvailable
+                ? "Thanh toán chưa khả dụng"
                 : `Mở Khóa Standee HD - ${priceLabel}đ`}
         </span>
       </button>

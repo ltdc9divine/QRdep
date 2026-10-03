@@ -8,14 +8,17 @@ type PaymentModalProps = {
   isProcessing: boolean;
   isCreatingPayment: boolean;
   payosEnabled: boolean;
+  simulationEnabled: boolean;
   price: number;
+  pendingOrderCode: string | null;
   error: string;
   onClose: () => void;
+  onCheckPayment: () => void;
   onPayOSPayment: () => void;
   onSimulatePayment: () => void;
 };
 
-export function PaymentModal({ isOpen, isProcessing, isCreatingPayment, payosEnabled, price, error, onClose, onPayOSPayment, onSimulatePayment }: PaymentModalProps) {
+export function PaymentModal({ isOpen, isProcessing, isCreatingPayment, payosEnabled, simulationEnabled, price, pendingOrderCode, error, onClose, onCheckPayment, onPayOSPayment, onSimulatePayment }: PaymentModalProps) {
   const isBusy = isProcessing || isCreatingPayment;
   const priceLabel = new Intl.NumberFormat("vi-VN").format(price);
 
@@ -57,6 +60,18 @@ export function PaymentModal({ isOpen, isProcessing, isCreatingPayment, payosEna
         >
           <X size={18} />
         </button>
+
+        {pendingOrderCode && (
+          <button
+            type="button"
+            className="mt-3 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm font-bold text-emerald-200 transition hover:bg-emerald-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/40 disabled:cursor-wait disabled:opacity-60"
+            disabled={isBusy}
+            onClick={onCheckPayment}
+          >
+            {isProcessing ? <LoaderCircle className="animate-spin" size={18} /> : <Check size={18} />}
+            {isProcessing ? "Đang kiểm tra đơn hàng…" : "Xác nhận đã chuyển khoản"}
+          </button>
+        )}
 
         <div className="mb-5 grid size-14 place-items-center rounded-2xl border border-emerald-400/20 bg-gradient-to-br from-emerald-400/20 to-teal-500/10 text-emerald-300 shadow-[0_0_24px_rgba(16,185,129,0.15)]">
           <CreditCard size={24} />
@@ -104,8 +119,8 @@ export function PaymentModal({ isOpen, isProcessing, isCreatingPayment, payosEna
         )}
 
         <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/70 px-3.5 py-3 text-center text-[11px] leading-relaxed text-slate-400">
-          <p className="font-bold text-slate-200">Chế độ thử nghiệm · không trừ tiền thật</p>
-          <p className="mt-1">{payosEnabled ? "Bạn cũng có thể thanh toán thật qua PayOS." : "PayOS chưa cấu hình khóa API; bạn vẫn có thể thử luồng mở khóa."}</p>
+          {simulationEnabled && <p className="font-bold text-slate-200">Chế độ thử nghiệm · không trừ tiền thật</p>}
+          <p className="mt-1">{payosEnabled ? "Thanh toán thật được xử lý an toàn qua PayOS." : simulationEnabled ? "PayOS chưa cấu hình khóa API; bạn vẫn có thể thử luồng mở khóa." : "Thanh toán hiện chưa được cấu hình. Vui lòng quay lại sau."}</p>
         </div>
       </section>
     </div>
