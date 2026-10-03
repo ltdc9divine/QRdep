@@ -37,12 +37,31 @@ export async function POST(request: NextRequest) {
 
   let payload: unknown;
   try {
-    payload = await request.json();
+    // Read body as text first, then parse as JSON.
+    const text = await request.text();
+    if (!text) {
+      return NextResponse.json({ error: "Dữ liệu webhook không hợp lệ." }, { status: 400 });
+    }
+    payload = JSON.parse(text);
   } catch {
     return NextResponse.json({ error: "Dữ liệu webhook không hợp lệ." }, { status: 400 });
   }
 
+  if (!payload || typeof payload !== "object") {
+    console.warn("Webhook received non-object payload:", JSON.stringify(payload));
+    return NextResponse.json({ error: "Dữ liệu webhook không hợp lệ." }, { status: 400 });
+  }
+
+  const maybeWebhook = payload as Record<string, unknown>;
+
+  // PayOS validation/test requests may not include a signature field.
+  if (typeof maybeWebhook.signature !== "string") {
+    console.log("Webhook validation/test request received (no signature):", JSON.stringify(payload));
+    return NextResponse.json({ success: true });
+  }
+
   if (!isPayOSWebhook(payload)) {
+    console.warn("Webhook payload failed structure validation:", JSON.stringify(payload));
     return NextResponse.json({ error: "Dữ liệu webhook không hợp lệ." }, { status: 400 });
   }
 
@@ -117,7 +136,13 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ success: true });
-  } catch {
+  } catch (error) {
+    console.error(
+      "Webhook signature verification failed:",
+      error instanceof Error ? error.message : String(error),
+      "Payload:",
+      JSON.stringify(payload),
+    );
     return NextResponse.json({ error: "Chữ ký webhook không hợp lệ." }, { status: 400 });
   }
 }
